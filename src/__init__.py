@@ -14,6 +14,8 @@ from .rul_preprocessing import (
     fit_sensor_scaler,
     scale_sensor_features,
     generate_sequences,
+    split_by_engine,
+    prepare_train_val_pipeline,
     process_pipeline,
     save_processed_outputs,
 )
@@ -30,6 +32,8 @@ __all__ = [
     "fit_sensor_scaler",
     "scale_sensor_features",
     "generate_sequences",
+    "split_by_engine",
+    "prepare_train_val_pipeline",
     "process_pipeline",
     "save_processed_outputs",
 ]

@@ -217,6 +217,7 @@ def generate_sequences(
     feature_cols: Optional[List[str]] = None,
     label_col: Optional[str] = DEFAULT_TARGET_COL,
     id_col: str = "id",
+    cycle_col: str = "cycle",
 ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     """
     Extract sliding-window sequences for 1D-CNN temporal modeling.
@@ -234,6 +235,7 @@ def generate_sequences(
         feature_cols: Features included in each temporal sequence.
         label_col: Name of RUL label column, or None if generating unlabeled sequences.
         id_col: Engine identifier column.
+        cycle_col: Operational cycle column for sorting.
 
     Returns:
         Tuple of (X, y):
@@ -250,6 +252,10 @@ def generate_sequences(
     label_list: List[float] = []
 
     for _, group in df.groupby(id_col):
+        # Guarantee strict chronological ordering by cycle within each engine
+        if cycle_col in group.columns:
+            group = group.sort_values(cycle_col)
+
         feature_matrix = group[cols].to_numpy(dtype=np.float32)
         num_rows = feature_matrix.shape[0]
 
@@ -274,6 +280,115 @@ def generate_sequences(
     label_array = np.array(label_list, dtype=np.float32).reshape(-1, 1) if has_labels else None
 
     return seq_array, label_array
+
+
+def split_by_engine(
+    df: pd.DataFrame,
+    val_ratio: float = 0.2,
+    id_col: str = "id",
+    seed: Optional[int] = 42,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Split a dataset into train and validation partitions strictly at the engine level.
+
+    Prevents temporal data leakage: all operational cycles of a given engine
+    reside entirely in either the train or validation partition.
+
+    Args:
+        df: Tabular DataFrame containing engine records.
+        val_ratio: Proportion of unique engines reserved for validation (0.0 to 1.0).
+        id_col: Column identifying engines.
+        seed: Random seed for reproducible engine selection (or None).
+
+    Returns:
+        Tuple of (train_df, val_df).
+    """
+    if val_ratio <= 0.0 or val_ratio >= 1.0:
+        raise ValueError(f"val_ratio must be strictly between 0.0 and 1.0, got {val_ratio}")
+
+    engine_ids = np.sort(df[id_col].unique())
+    num_engines = len(engine_ids)
+    if num_engines < 2:
+        raise ValueError(f"Cannot split by engine: dataset contains only {num_engines} engine.")
+
+    if seed is not None:
+        rng = np.random.RandomState(seed)
+        shuffled_ids = rng.permutation(engine_ids)
+    else:
+        shuffled_ids = engine_ids.copy()
+
+    num_val = max(1, int(round(num_engines * val_ratio)))
+    val_ids = set(shuffled_ids[:num_val])
+    train_ids = set(shuffled_ids[num_val:])
+
+    train_df = df[df[id_col].isin(train_ids)].copy()
+    val_df = df[df[id_col].isin(val_ids)].copy()
+    return train_df, val_df
+
+
+def prepare_train_val_pipeline(
+    train_path: Union[str, Path],
+    val_ratio: float = 0.2,
+    sequence_length: int = DEFAULT_SEQUENCE_LENGTH,
+    rul_clip: int = DEFAULT_RUL_CLIP,
+    feature_cols: Optional[List[str]] = None,
+    seed: Optional[int] = 42,
+) -> Dict[str, Union[pd.DataFrame, np.ndarray, MinMaxScaler, List]]:
+    """
+    End-to-end training and validation data preparation pipeline.
+
+    1. Loads dataset and validates schema.
+    2. Computes piecewise-linear RUL targets (R_early) if not already present.
+    3. Splits data into train and validation sets strictly by engine ID.
+    4. Fits MinMaxScaler exclusively on train engines (zero test/val leakage).
+    5. Scales features for both train and validation sets.
+    6. Generates 3D sliding-window sequence arrays and aligned labels.
+
+    Returns:
+        Dictionary containing X_train, y_train, X_val, y_val, scaler, and engine ID lists.
+    """
+    cols = feature_cols or DEFAULT_FEATURE_COLS
+    required_base = ["id", "cycle"] + cols
+
+    raw_df = load_csv_data(train_path, required_cols=required_base)
+    if DEFAULT_TARGET_COL not in raw_df.columns:
+        raw_df = compute_piecewise_rul(raw_df, max_cycle=rul_clip)
+
+    train_df, val_df = split_by_engine(raw_df, val_ratio=val_ratio, seed=seed)
+
+    # Fit scaler strictly on train engines
+    scaler = fit_sensor_scaler(train_df, feature_cols=cols)
+
+    # Transform both
+    train_norm = scale_sensor_features(train_df, scaler, feature_cols=cols)
+    val_norm = scale_sensor_features(val_df, scaler, feature_cols=cols)
+
+    # Generate sequences
+    X_train, y_train = generate_sequences(
+        train_norm,
+        sequence_length=sequence_length,
+        feature_cols=cols,
+        label_col=DEFAULT_TARGET_COL,
+    )
+    X_val, y_val = generate_sequences(
+        val_norm,
+        sequence_length=sequence_length,
+        feature_cols=cols,
+        label_col=DEFAULT_TARGET_COL,
+    )
+
+    return {
+        "X_train": X_train,
+        "y_train": y_train,
+        "X_val": X_val,
+        "y_val": y_val,
+        "scaler": scaler,
+        "feature_cols": cols,
+        "train_engine_ids": sorted(list(train_df["id"].unique())),
+        "val_engine_ids": sorted(list(val_df["id"].unique())),
+        "sequence_length": sequence_length,
+        "rul_clip": rul_clip,
+    }
 
 
 def process_pipeline(
