@@ -15,6 +15,24 @@ The RUL estimator has 4 convolutional hidden layers with varying filters and a k
 ## Usage
 You may load the model checkpoint and predict the RUL directly or preprocess and train a new model using the functions in the CMAPSS data cleaner and the steps shown in the notebook.
 
+### Local Preprocessing Pipeline (New in this Fork)
+
+This fork introduces a modular preprocessing package (`src/rul_preprocessing.py`) and a command-line interface (`scripts/prepare_data.py`) to prepare NASA C-MAPSS data locally without Google Colab dependencies:
+
+```bash
+python scripts/prepare_data.py \
+  --train-input Train_data.csv \
+  --test-input test_engine_21.csv \
+  --output-dir data/processed \
+  --sequence-length 40 \
+  --rul-clip 125
+```
+
+Artifacts generated in `output-dir`:
+- `train_normalized.csv`, `test_normalized.csv`: Scaled sensor readings with metadata.
+- `train_sequences.npz`, `test_sequences.npz`: 3D temporal sliding windows `(samples, sequence_length, features)` and aligned target labels `(samples, 1)` for 1D-CNN regression.
+- `metadata.json`: Dataset summary statistics, engine counts, and tensor dimensions.
+
 If you like the example in this notebook, you will also like a new architecture proposed in [this paper](https://www.researchgate.net/publication/351693960_Causal_augmented_ConvNet_A_temporal_memory_dilated_convolution_model_for_long-sequence_time_series_prediction). It gives a state-of-the-art prediction, and can be used for other time-series prediction tasks. An adaptation of the code used in the paper is presented [here](https://github.com/abiodun-ayodeji/CaConvNet_for_time_series).
 
 ## Links:
