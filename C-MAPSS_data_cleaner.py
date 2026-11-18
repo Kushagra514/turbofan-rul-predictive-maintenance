@@ -16,8 +16,8 @@ def train_data_cleaner(train):
 
 def train_data_cleaner_R_early(train):
     train['remaining_cycle'] = train.groupby(['id'])['cycle'].transform(max)-train['cycle']
-    df_train['R_early'] = train['remaining_cycle'].apply(lambda x: cycle if x >= cycle else x)
-    train_x=df_train.drop(["id","cycle","op1","op2","op3","sensor1","sensor5","sensor6",
+    train['R_early'] = train['remaining_cycle'].apply(lambda x: cycle if x >= cycle else x)
+    train_x=train.drop(["id","cycle","op1","op2","op3","sensor1","sensor5","sensor6",
     "sensor10","sensor16","sensor18","sensor19","sensor22","sensor23"],axis=1)
     return train_x
 
@@ -49,7 +49,7 @@ def test_data_cleaner_R_early(test_results,test):
     test=test.merge(test_results,on=['id'],how='left')
     test["remaining_cycle"]=test["rul_failed"]-test["cycle"]
     test.drop(["rul_failed"],axis=1,inplace=True)
-    df_test['R_early'] = test['remaining_cycle'].apply(lambda x: cycle if x >= cycle else x)
-    test_x = df_test.drop(["id","cycle","op1","op2","op3","sensor1","sensor5","sensor6","sensor10","sensor16",
+    test['R_early'] = test['remaining_cycle'].apply(lambda x: cycle if x >= cycle else x)
+    test_x = test.drop(["id","cycle","op1","op2","op3","sensor1","sensor5","sensor6","sensor10","sensor16",
     "sensor18","sensor19","sensor22","sensor23","remaining_cycle"],axis=1)
     return test_x
