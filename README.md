@@ -33,6 +33,29 @@ Artifacts generated in `output-dir`:
 - `train_sequences.npz`, `test_sequences.npz`: 3D temporal sliding windows `(samples, sequence_length, features)` and aligned target labels `(samples, 1)` for 1D-CNN regression.
 - `metadata.json`: Dataset summary statistics, engine counts, and tensor dimensions.
 
+### Reproducible Training Pipeline (New in this Fork)
+
+Train the 1D-CNN regression model locally with leakage-free engine-level splitting and early stopping:
+
+```bash
+python scripts/train_dcnn.py \
+  --data-input Train_data.csv \
+  --output-dir artifacts/training \
+  --epochs 15 \
+  --batch-size 64
+```
+
+### Model Evaluation & Diagnostics (New in this Fork)
+
+Evaluate the checkpointed model on held-out validation engines, generating regression metrics (MAE, RMSE, $R^2$, NASA Score) and diagnostic plots:
+
+```bash
+python scripts/evaluate_model.py \
+  --model-path artifacts/training/best_model.keras \
+  --data-input Train_data.csv \
+  --output-dir artifacts/evaluation
+```
+
 If you like the example in this notebook, you will also like a new architecture proposed in [this paper](https://www.researchgate.net/publication/351693960_Causal_augmented_ConvNet_A_temporal_memory_dilated_convolution_model_for_long-sequence_time_series_prediction). It gives a state-of-the-art prediction, and can be used for other time-series prediction tasks. An adaptation of the code used in the paper is presented [here](https://github.com/abiodun-ayodeji/CaConvNet_for_time_series).
 
 ## Links:

@@ -6,12 +6,16 @@
 - **Fork Target**: [Kushagra514/turbofan-rul-predictive-maintenance](https://github.com/Kushagra514/turbofan-rul-predictive-maintenance)
 
 ## 2. Project Overview
-This project predicts the Remaining Useful Life (RUL) of turbofan jet engines using the NASA C-MAPSS (Commercial Modular Aero-Propulsion System Simulation) benchmark dataset (`FD001` subset). The model architecture is a Deep 1D Convolutional Neural Network (DCNN) that accepts sliding-window sensor sequences and predicts a piecewise-linear rectified RUL ($R_{early} = 125$ cycles).
+This project predicts the Remaining Useful Life (RUL) of turbofan jet engines using the NASA C-MAPSS (Commercial Modular Aero-Propulsion System Simulation) benchmark dataset (`FD001` subset). The system implements an end-to-end, reproducible machine learning pipeline consisting of:
+1. **Data Preprocessing**: Piecewise-linear degradation clipping ($R_{early} = 125$ cycles), leak-free sensor normalization, and temporal sliding-window sequence extraction.
+2. **1D-CNN Regression Architecture**: Multi-stage 1D convolutional feature extractor with global temporal pooling.
+3. **Reproducible Training Pipeline**: Engine-level train/validation splitting, early stopping, and model checkpointing.
+4. **Model Evaluation & Diagnostics**: MAE, RMSE, $R^2$, and the official NASA C-MAPSS asymmetric scoring function, accompanied by diagnostic visualizations.
 
 ## 3. Actual Local Folder Structure
 ```
 turbofan-rul/
-├── .gitignore                                                    # Excludes virtual environments, caches, and data/
+├── .gitignore                                                    # Excludes virtual environments, caches, data/, and artifacts/
 ├── C-MAPSS_data_cleaner.py                                       # Original C-MAPSS feature cleaning routines
 ├── DEVELOPMENT.md                                                # Development instructions, audit, and verification status
 ├── LICENSE                                                       # Original MIT License
@@ -19,147 +23,158 @@ turbofan-rul/
 ├── Train_data.csv                                                # Cleaned training dataset (100 engines, 20,631 cycles)
 ├── test_engine_21.csv                                            # Cleaned test dataset (engine #21, 195 cycles)
 ├── scripts/
-│   └── prepare_data.py                                           # Command-line interface for local data preparation
+│   ├── prepare_data.py                                           # CLI for local data preparation and sequence generation
+│   ├── train_dcnn.py                                             # CLI for reproducible DCNN training with engine-level splitting
+│   └── evaluate_model.py                                         # CLI for model evaluation, metrics, and diagnostic plots
 ├── src/
 │   ├── __init__.py                                               # Package exports
-│   └── rul_preprocessing.py                                      # Modular data loading, scaling, and sequence generation
+│   ├── rul_model.py                                              # 1D-CNN architecture definition and model persistence
+│   └── rul_preprocessing.py                                      # Modular data loading, scaling, splitting, and sequence generation
 ├── tests/
 │   ├── conftest.py                                               # Pytest path and environment configuration
 │   ├── test_cleaner.py                                           # Regression tests for C-MAPSS_data_cleaner.py (4 tests)
-│   └── test_preprocessing.py                                     # Unit & integration tests for modular pipeline (14 tests)
-└── TURBOFAN Engine Remaining Useful Life Prediction with DCNN_main.ipynb # 1D-CNN model training & evaluation notebook
+│   ├── test_model_and_training.py                                # DCNN model, metrics, and training smoke tests (9 tests)
+│   └── test_preprocessing.py                                     # Unit & integration tests for preprocessing pipeline (14 tests)
+└── TURBOFAN Engine Remaining Useful Life Prediction with DCNN_main.ipynb # Original research notebook
 ```
 
-## 4. Preprocessing Architecture & Pipeline Stages
+## 4. CNN Architecture & Specifications
+
+The 1D-CNN architecture (`src/rul_model.py`) models temporal sensor dynamics without requiring recurrent connections:
 
 ```
-   Raw / Cleaned CSVs (Train & Test)
-                 │
-                 ▼
-  [ Stage 1: Load & Validate ]
-   - Validate file existence and non-emptiness
-   - Check required schema (id, cycle, sensor columns)
-                 │
-                 ▼
-  [ Stage 2: Piecewise-Linear RUL Computation ]
-   - remaining_cycle = max(cycle) - cycle  (per engine id)
-   - R_early = min(remaining_cycle, rul_clip=125)
-                 │
-                 ▼
-  [ Stage 3: Leak-Free Normalization ]
-   - Fit MinMaxScaler strictly on Train feature columns
-   - Transform Train features and Test features independently
-                 │
-                 ▼
-  [ Stage 4: Temporal Sliding-Window Extraction ]
-   - Sliding window of length W (default: 40 cycles)
-   - Input tensor X: shape (N, 40, 14)
-   - Output target y: shape (N, 1) aligned with window end
-                 │
-                 ▼
-  [ Stage 5: Artifact Persistence ]
-   - train_normalized.csv, test_normalized.csv
-   - train_sequences.npz, test_sequences.npz
-   - metadata.json (dataset statistics & tensor shapes)
+Input: (batch_size, sequence_length=40, num_features=14)
+   │
+   ├─► Conv1D(32 filters, kernel_size=8, padding='same', activation='relu')   -> (None, 40, 32)
+   ├─► Conv1D(64 filters, kernel_size=8, padding='same', activation='relu')   -> (None, 40, 64)
+   ├─► Conv1D(64 filters, kernel_size=8, padding='same', activation='relu')   -> (None, 40, 64)
+   ├─► Conv1D(32 filters, kernel_size=8, padding='same', activation='relu')   -> (None, 40, 32)
+   │
+   ├─► GlobalMaxPooling1D()                                                  -> (None, 32)
+   ├─► Dropout(rate=0.5)
+   │
+   ├─► Dense(100 units, activation='linear')                                  -> (None, 100)
+   ├─► Dropout(rate=0.2)
+   │
+   └─► Dense(1 unit, activation='linear') [Output RUL Prediction]            -> (None, 1)
 ```
 
-## 5. Input Data Format & Expected Columns
+- **Total Parameters**: 72,713 trainable parameters (~284 KB in memory).
+- **Loss Function**: Huber loss ($\delta = 1.0$), which behaves quadratically for small residuals and linearly for large residuals, mitigating sensitivity to degradation outliers.
+- **Optimizer**: RMSprop (learning rate $\eta = 10^{-4}$).
 
-The preprocessing module expects tabular data with the following schema:
-- **Identifier**: `id` (integer engine ID).
-- **Time/Sequence**: `cycle` (operational cycle number, starting at 1).
-- **Sensor Features (14 channels)**:
-  `sensor2`, `sensor3`, `sensor4`, `sensor7`, `sensor8`, `sensor9`, `sensor11`, `sensor12`, `sensor13`, `sensor14`, `sensor15`, `sensor17`, `sensor20`, `sensor21`.
-- **Target Label (optional on input)**: `R_early` (piecewise-linear RUL). If absent, it is calculated automatically from engine cycles.
+## 5. Data Pipeline & Leakage Prevention Strategy
 
-## 6. How the Command-Line Tool Works
+### A. Engine-Level Splitting (Zero Window Leakage)
+In time-series sequence modeling, randomly splitting sliding windows produces artificial data leakage because window $i$ (cycles $t \dots t+W-1$) and window $i+1$ (cycles $t+1 \dots t+W$) share $W-1$ identical timesteps.
 
-The preprocessing script `scripts/prepare_data.py` provides a standalone CLI with argument parsing, validation, and progress reporting:
+Our pipeline enforces **engine-level disjoint splitting**:
+- Unique engine IDs are partitioned into training engines (80%) and validation engines (20%).
+- All operational cycles for any given engine reside strictly within one partition.
 
-### Example CLI Execution
+### B. Preprocessing Isolation (Zero Statistical Leakage)
+- Feature normalization statistics (Min/Max values) are computed strictly from the training engines.
+- The validation engines are transformed using the fitted training scaler without computing test statistics.
+
+### C. Temporal Sequence Alignment
+- A sliding window of length $W = 40$ spans cycles $[t - W + 1 \dots t]$.
+- The aligned target label $y_t = R_{early}(t+1)$ represents the remaining useful life at the step immediately following the window.
+
+## 6. How to Run Training and Evaluation
+
+### Training the DCNN Model
 ```bash
-python scripts/prepare_data.py \
-  --train-input Train_data.csv \
-  --test-input test_engine_21.csv \
-  --output-dir data/processed \
+python scripts/train_dcnn.py \
+  --data-input Train_data.csv \
+  --output-dir artifacts/training \
+  --val-ratio 0.2 \
   --sequence-length 40 \
-  --rul-clip 125
+  --rul-clip 125 \
+  --epochs 15 \
+  --batch-size 64 \
+  --learning-rate 1e-4 \
+  --patience 5 \
+  --seed 42
 ```
 
-### CLI Arguments
-| Flag | Type | Default | Description |
-|---|---|---|---|
-| `--train-input` | string | *required* | Path to training CSV file |
-| `--test-input` | string | `None` | Path to optional test CSV file |
-| `--output-dir` | string | `./data/processed` | Destination directory for processed artifacts |
-| `--sequence-length`| integer| `40` | Temporal window size in operational cycles |
-| `--rul-clip` | integer| `125` | Early degradation threshold cycle |
+Outputs written to `artifacts/training/`:
+- `best_model.keras`: Checkpointed best model weights based on minimum validation loss.
+- `history.json`: Epoch-by-epoch loss, MAE, and RMSE metrics.
+- `training_summary.json`: Detailed execution metadata, engine IDs, sample counts, and final scores.
+- `scaler_params.json`: Feature normalization bounds for standalone inference.
 
-### Output Artifacts
-- `train_normalized.csv`: Scaled tabular training dataset.
-- `test_normalized.csv`: Scaled tabular test dataset (when test input is provided).
-- `train_sequences.npz`: Compressed NumPy archive containing:
-  - `X`: shape `(16631, 40, 14)`, `float32`.
-  - `y`: shape `(16631, 1)`, `float32`.
-- `test_sequences.npz`: Compressed NumPy archive containing:
-  - `X`: shape `(155, 40, 14)`, `float32`.
-  - `y`: shape `(155, 1)`, `float32`.
-- `metadata.json`: JSON record of dataset shapes, engine counts, and feature names.
+### Evaluating the Model
+```bash
+python scripts/evaluate_model.py \
+  --model-path artifacts/training/best_model.keras \
+  --data-input Train_data.csv \
+  --history-path artifacts/training/history.json \
+  --output-dir artifacts/evaluation \
+  --val-ratio 0.2 \
+  --seed 42
+```
 
-## 7. How to Run Unit Tests
+Outputs written to `artifacts/evaluation/`:
+- `evaluation_metrics.json`: Quantitative report (MAE, RMSE, $R^2$, NASA Score).
+- `actual_vs_predicted.png`: Time-series overlay of predicted versus ground truth RUL.
+- `residuals_distribution.png`: Histogram and scatter plot of prediction errors.
+- `loss_and_metrics_curves.png`: Training vs validation loss and RMSE progression curves.
 
-Tests use small synthetic DataFrames and temporary directories, running entirely offline without depending on external dataset downloads:
+## 7. Actual Measured Baseline Performance
 
+The model was trained on the NASA C-MAPSS dataset on Ubuntu Linux (CPU execution):
+- **Training Engines**: 80 engines (13,361 sequences)
+- **Validation Engines**: 20 held-out engines (3,270 sequences)
+- **Training Epochs**: 15 epochs (best weights restored from epoch 14)
+
+### Held-Out Validation Set Metrics (3,270 samples):
+| Metric | Measured Value | Interpretation |
+|---|---|---|
+| **Huber Loss** | **12.7217** | Robust regression objective |
+| **MAE** | **13.21 cycles** | Mean absolute prediction error across all operational cycles |
+| **RMSE** | **17.52 cycles** | Standard deviation of prediction errors |
+| **$R^2$ Score** | **0.8221** | Model explains 82.2% of the variance in engine RUL |
+| **NASA Score** | **21,891.1** | Official asymmetric PHM challenge penalty score |
+| **Mean Error** | **-2.01 cycles** | Slight tendency to predict RUL 2 cycles early (safer for maintenance) |
+
+## 8. Unit Test Suite (27 Passed Tests)
+
+Run the complete test suite:
 ```bash
 pytest tests/ -v
 ```
 
-### Current Test Suite (18 passed in ~1.0s)
-- **`tests/test_cleaner.py` (4 tests)**:
-  - `test_train_data_cleaner`: Verifies standard RUL computation and column dropping.
-  - `test_train_data_cleaner_R_early_no_name_error`: Verifies fix for upstream `df_train` NameError.
-  - `test_test_data_cleaner`: Verifies test ground-truth RUL merge.
-  - `test_test_data_cleaner_R_early_no_name_error`: Verifies fix for upstream `df_test` NameError.
-- **`tests/test_preprocessing.py` (14 tests)**:
-  - `test_load_csv_data_valid`: Valid CSV ingestion and shape validation.
-  - `test_load_csv_data_missing_file`: FileNotFoundError on non-existent path.
-  - `test_load_csv_data_empty_file`: ValueError on empty files.
-  - `test_load_csv_data_missing_columns`: ValueError when required columns are missing.
-  - `test_compute_piecewise_rul`: Correct thresholding at 125 cycles and linear descent.
-  - `test_compute_piecewise_rul_missing_columns`: ValueError on missing metadata columns.
-  - `test_scaler_no_data_leakage`: Confirms scaler is fit solely on train; preserves metadata.
-  - `test_generate_sequences_shapes_and_alignment`: 3D tensor shape verification and label alignment.
-  - `test_generate_sequences_invalid_sequence_length`: Validation for invalid window parameters.
-  - `test_process_pipeline_deterministic`: Validates identical outputs across repeated runs.
-  - `test_save_processed_outputs_creates_directory_and_artifacts`: Auto-creation of directory and persistence.
-  - `test_cli_success`: CLI smoke test on synthetic data returning exit code 0.
-  - `test_cli_missing_file_returns_error`: CLI returns non-zero exit code (1) on missing input.
-  - `test_cli_invalid_arguments`: CLI returns non-zero exit code (1) on invalid parameters.
+Test breakdown:
+- **`tests/test_cleaner.py` (4 tests)**: Validates fix for upstream `NameError` bugs and original cleaner functions.
+- **`tests/test_preprocessing.py` (14 tests)**: Tests CSV loading, schema validation, piecewise RUL calculation, leak-free scaling, sliding-window generation, and CLI commands.
+- **`tests/test_model_and_training.py` (9 tests)**: Tests model input/output shapes, single forward pass, model saving/loading, NASA score asymmetry, engine-level splitting, and 1-epoch CLI smoke tests.
 
-## 8. Development Environment & Verified Dependencies
+## 9. Development Environment & Verified Dependencies
 
-Development and verification environment on Ubuntu Linux (Lenovo LOQ, RTX 3050 6GB):
-- **Python**: 3.14.6 (Anaconda base environment)
+Development environment on Ubuntu Linux (Lenovo LOQ):
+- **Python**: 3.14.6
+- **TensorFlow (CPU)**: 2.22.0-rc1
+- **Keras**: 3.16.0
+- **scikit-learn**: 1.9.0
 - **pandas**: 3.0.3
 - **numpy**: 2.4.6
-- **scikit-learn**: 1.9.0
+- **matplotlib**: 3.11.0
 - **pytest**: 9.0.3
 
-*Note: Preprocessing requires zero GPU or CUDA packages. Full model training with TensorFlow/Keras remains a separate downstream milestone.*
+*Zero heavy GPU or CUDA dependencies were required. CPU execution with AVX instructions trains 15 epochs in ~25 seconds.*
 
-## 9. Completed vs. Planned Work
+## 10. Completed vs. Planned Work
 
 ### Completed Work
-- [x] Fixed upstream `NameError` bugs in `C-MAPSS_data_cleaner.py`.
-- [x] Extracted modular preprocessing pipeline (`src/rul_preprocessing.py`).
-- [x] Built command-line preprocessing tool (`scripts/prepare_data.py`).
-- [x] Prevented test-set data leakage via strict train-only scaler fitting.
-- [x] Implemented comprehensive synthetic unit test suite (18 tests passing).
-- [x] Updated `.gitignore` to prevent accidental staging of generated data artifacts (`data/`, `*.npz`).
-- [x] Documented local CLI workflow and dataset schemas.
+- [x] Pre-training audit of sequence alignment, engine separation, and data leakage.
+- [x] Identified that `test_engine_21.csv` is an extract of Engine 21 from `Train_data.csv`, and established strict engine-level validation splitting to prevent evaluating on training data.
+- [x] Extracted modular 1D-CNN architecture (`src/rul_model.py`).
+- [x] Built configurable training pipeline (`scripts/train_dcnn.py`) with early stopping, checkpointing, and engine-level splitting.
+- [x] Built evaluation pipeline (`scripts/evaluate_model.py`) with MAE, RMSE, $R^2$, NASA score, and diagnostic plots.
+- [x] Verified full test suite with 27 automated tests passing in ~6.5 seconds.
+- [x] Successfully trained model on 80 engines and achieved 13.21 MAE / 17.52 RMSE on 20 held-out engines.
 
 ### Planned Personal Extensions
-- [ ] Implement modular model training script (`src/train_dcnn.py`) to run 1D-CNN training directly from generated `.npz` sequence arrays.
-- [ ] Add inference / prediction CLI (`scripts/predict_rul.py`) evaluating trained models on new engine trajectories.
-- [ ] Add automated evaluation metrics (RMSE, NASA scoring function $s = \sum (\exp(d/13) - 1)$).
-- [ ] Create GitHub Actions CI workflow to run test suite on push and PR.
+- [ ] Add inference CLI (`scripts/predict_rul.py`) for streaming sensor batches.
+- [ ] Experiment with dilated convolutions or causal temporal convolutions (TCN).
+- [ ] Implement automated GitHub Actions CI workflow to run test suite on PR/push.
