@@ -127,3 +127,7 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Generated processed data artifacts and numpy arrays
+data/
+*.npz
